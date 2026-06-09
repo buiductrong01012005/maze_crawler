@@ -150,7 +150,7 @@ class CrawlGymnasiumEnv(gym.Env):
             # Copy global environment fields to opponent observation
             for field in ['southBound', 'northBound', 'step', 'globalWalls', 'globalCrystals', 'globalRobots', 'globalMines', 'globalMiningNodes']:
                 if hasattr(player_obs, field):
-                    opponent_obs[field] = getattr(player_obs, field)
+                    setattr(opponent_obs, field, getattr(player_obs, field))
 
             if isinstance(self.current_opponent, str) and self.current_opponent == "random":
                 opponent_actions = self._random_actions(opponent_obs)

@@ -1,0 +1,14 @@
+.codegraph/
+.cursor/
+.pytest_cache/
+
+# Python cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Training outputs
+logs/
+drl/logs/
+checkpoints/
+drl/checkpoints/

@@ -68,17 +68,20 @@ class SelfPlayLeague:
 
         try:
             shutil.copy(checkpoint_path, pool_path)
-            self.pool.append(pool_path)
-
-            if len(self.pool) > self.pool_size:
-                old_path = self.pool.pop(0)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-
+            self.add_checkpoint(pool_path)
             return True
         except Exception as e:
             print(f"Failed to snapshot: {e}")
             return False
+
+    def add_checkpoint(self, checkpoint_path: str, remove_old: bool = True):
+        """Add an existing checkpoint file to the opponent pool."""
+        self.pool.append(str(checkpoint_path))
+
+        while len(self.pool) > self.pool_size:
+            old_path = self.pool.pop(0)
+            if remove_old and os.path.exists(old_path):
+                os.remove(old_path)
 
     def list_opponents(self) -> List[str]:
         """List all available opponents in pool."""

@@ -20,6 +20,7 @@ from .obs_utils import extract_local_view, extract_scalars
 from .action_utils import compute_action_mask, ACTION_ID_TO_STRING
 from .reward import RewardShaper
 from .evaluate import Evaluator
+from .self_play import SelfPlayLeague
 
 try:
     import matplotlib
@@ -323,7 +324,11 @@ class PPOTrainer:
         self.next_action_histogram_step = config.action_histogram_interval
         self.next_self_play_snapshot_step = config.self_play_snapshot_interval
         self.base_opponents = self._parse_opponents(config.opponent)
-        self.self_play_pool = []
+        self.self_play_league = SelfPlayLeague(
+            pool_size=config.self_play_pool_size,
+            snapshot_interval=config.self_play_snapshot_interval,
+            checkpoint_dir=checkpoint_dir,
+        )
         self.self_play_enabled = False
 
     def _parse_opponents(self, opponent) -> List[str]:
@@ -336,7 +341,7 @@ class PPOTrainer:
 
     def _set_env_opponents(self):
         """Push the current opponent pool into all live environments."""
-        pool = self.base_opponents + self.self_play_pool
+        pool = self.base_opponents + self.self_play_league.list_opponents()
         opponent = pool if len(pool) > 1 else pool[0]
         self.config.opponent = opponent
         for env in self.envs:
@@ -362,16 +367,13 @@ class PPOTrainer:
             f"selfplay_step_{self.global_step}.pt",
         )
         self.save_checkpoint(snapshot_path)
-        self.self_play_pool.append(snapshot_path)
-
-        if len(self.self_play_pool) > self.config.self_play_pool_size:
-            self.self_play_pool = self.self_play_pool[-self.config.self_play_pool_size:]
+        self.self_play_league.add_checkpoint(snapshot_path)
 
         self._set_env_opponents()
         self.self_play_enabled = True
         print(
             "Self-play opponent pool updated: "
-            f"{len(self.self_play_pool)} snapshots, "
+            f"{len(self.self_play_league.list_opponents())} snapshots, "
             f"{len(self.base_opponents)} base opponents"
         )
         self.next_self_play_snapshot_step = (
@@ -795,7 +797,7 @@ class PPOTrainer:
                 "global_step": self.global_step,
                 "update_count": self.update_count,
                 "episode_count": self.episode_count,
-                "self_play_pool": self.self_play_pool,
+                "self_play_pool": self.self_play_league.list_opponents(),
                 "self_play_enabled": self.self_play_enabled,
                 "config": vars(self.config),
             },
@@ -811,9 +813,11 @@ class PPOTrainer:
         self.global_step = checkpoint.get("global_step", 0)
         self.update_count = checkpoint.get("update_count", 0)
         self.episode_count = checkpoint.get("episode_count", 0)
-        self.self_play_pool = checkpoint.get("self_play_pool", [])
-        self.self_play_enabled = checkpoint.get("self_play_enabled", bool(self.self_play_pool))
-        if self.self_play_pool:
+        self.self_play_league.pool = checkpoint.get("self_play_pool", [])
+        self.self_play_enabled = checkpoint.get(
+            "self_play_enabled", bool(self.self_play_league.pool)
+        )
+        if self.self_play_league.pool:
             self._set_env_opponents()
         self.next_checkpoint_step = (
             (self.global_step // self.config.checkpoint_interval) + 1
