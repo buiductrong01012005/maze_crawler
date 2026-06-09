@@ -354,7 +354,9 @@ class CrawlGymnasiumEnv(gym.Env):
 
     def close(self):
         """Close environment."""
-        self.env.close()
+        close = getattr(self.env, "close", None)
+        if callable(close):
+            close()
 
 
 if __name__ == "__main__":

@@ -321,6 +321,62 @@ class PPOTrainer:
         self.next_eval_step = config.eval_interval
         self.next_plot_step = config.plot_interval
         self.next_action_histogram_step = config.action_histogram_interval
+        self.next_self_play_snapshot_step = config.self_play_snapshot_interval
+        self.base_opponents = self._parse_opponents(config.opponent)
+        self.self_play_pool = []
+        self.self_play_enabled = False
+
+    def _parse_opponents(self, opponent) -> List[str]:
+        """Normalize an opponent spec into a list for opponent sampling."""
+        if isinstance(opponent, list):
+            return [str(item).strip() for item in opponent if str(item).strip()]
+        if isinstance(opponent, str) and "," in opponent:
+            return [item.strip() for item in opponent.split(",") if item.strip()]
+        return [opponent]
+
+    def _set_env_opponents(self):
+        """Push the current opponent pool into all live environments."""
+        pool = self.base_opponents + self.self_play_pool
+        opponent = pool if len(pool) > 1 else pool[0]
+        self.config.opponent = opponent
+        for env in self.envs:
+            env.opponent = opponent
+            env.current_opponent = opponent
+
+    def maybe_update_self_play(self, win_rate: float, outcomes_count: int):
+        """Add policy snapshots as opponents after the agent is reliably winning."""
+        if not self.config.use_self_play:
+            return
+
+        if outcomes_count < self.config.self_play_min_episodes:
+            return
+
+        if win_rate < self.config.self_play_win_rate_threshold:
+            return
+
+        if self.global_step < self.next_self_play_snapshot_step:
+            return
+
+        snapshot_path = os.path.join(
+            self.checkpoint_dir,
+            f"selfplay_step_{self.global_step}.pt",
+        )
+        self.save_checkpoint(snapshot_path)
+        self.self_play_pool.append(snapshot_path)
+
+        if len(self.self_play_pool) > self.config.self_play_pool_size:
+            self.self_play_pool = self.self_play_pool[-self.config.self_play_pool_size:]
+
+        self._set_env_opponents()
+        self.self_play_enabled = True
+        print(
+            "Self-play opponent pool updated: "
+            f"{len(self.self_play_pool)} snapshots, "
+            f"{len(self.base_opponents)} base opponents"
+        )
+        self.next_self_play_snapshot_step = (
+            self.global_step + self.config.self_play_snapshot_interval
+        )
 
     def collect_rollouts(self) -> Tuple[RolloutBuffer, Dict[str, float]]:
         """Collect rollouts from environment."""
@@ -614,6 +670,7 @@ class PPOTrainer:
                 "eval_avg_steps": eval_metrics.get("avg_steps", ""),
             }
             self.metric_logger.log_row(metrics_row)
+            self.maybe_update_self_play(win_rate, len(outcomes))
 
             # Logging
             if self.update_count % self.config.log_interval == 0:
@@ -738,6 +795,8 @@ class PPOTrainer:
                 "global_step": self.global_step,
                 "update_count": self.update_count,
                 "episode_count": self.episode_count,
+                "self_play_pool": self.self_play_pool,
+                "self_play_enabled": self.self_play_enabled,
                 "config": vars(self.config),
             },
             path,
@@ -750,6 +809,12 @@ class PPOTrainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.global_step = checkpoint.get("global_step", 0)
+        self.update_count = checkpoint.get("update_count", 0)
+        self.episode_count = checkpoint.get("episode_count", 0)
+        self.self_play_pool = checkpoint.get("self_play_pool", [])
+        self.self_play_enabled = checkpoint.get("self_play_enabled", bool(self.self_play_pool))
+        if self.self_play_pool:
+            self._set_env_opponents()
         self.next_checkpoint_step = (
             (self.global_step // self.config.checkpoint_interval) + 1
         ) * self.config.checkpoint_interval
@@ -762,6 +827,9 @@ class PPOTrainer:
         self.next_action_histogram_step = (
             (self.global_step // self.config.action_histogram_interval) + 1
         ) * self.config.action_histogram_interval
+        self.next_self_play_snapshot_step = (
+            (self.global_step // self.config.self_play_snapshot_interval) + 1
+        ) * self.config.self_play_snapshot_interval
         print(f"Loaded checkpoint from {path}")
 
 
@@ -777,7 +845,7 @@ def main():
         "--opponent",
         type=str,
         default="random",
-        help="Opponent agent",
+        help="Opponent agent: random, .pt/.py path, or comma-separated pool",
     )
     parser.add_argument(
         "--num-envs",
@@ -812,8 +880,37 @@ def main():
     parser.add_argument(
         "--checkpoint-interval",
         type=int,
-        default=100_000,
+        default=10_000,
         help="Save a model checkpoint every N environment steps",
+    )
+    parser.add_argument(
+        "--use-self-play",
+        action="store_true",
+        help="Add current-policy snapshots to the opponent pool after it is reliably winning",
+    )
+    parser.add_argument(
+        "--self-play-snapshot-interval",
+        type=int,
+        default=100_000,
+        help="Save a self-play opponent snapshot every N steps once the win-rate gate is met",
+    )
+    parser.add_argument(
+        "--self-play-pool-size",
+        type=int,
+        default=10,
+        help="Maximum number of self-play snapshots to sample as opponents",
+    )
+    parser.add_argument(
+        "--self-play-win-rate-threshold",
+        type=float,
+        default=0.90,
+        help="Rolling Win100 threshold required before adding self-play opponents",
+    )
+    parser.add_argument(
+        "--self-play-min-episodes",
+        type=int,
+        default=100,
+        help="Minimum completed rolling episodes before the self-play win-rate gate can open",
     )
     parser.add_argument(
         "--eval-interval",
@@ -867,6 +964,11 @@ def main():
         batch_size=args.batch_size,
         device=args.device,
         checkpoint_interval=args.checkpoint_interval,
+        use_self_play=args.use_self_play,
+        self_play_snapshot_interval=args.self_play_snapshot_interval,
+        self_play_pool_size=args.self_play_pool_size,
+        self_play_win_rate_threshold=args.self_play_win_rate_threshold,
+        self_play_min_episodes=args.self_play_min_episodes,
         eval_interval=args.eval_interval,
         eval_episodes=args.eval_episodes,
         log_interval=args.log_interval,

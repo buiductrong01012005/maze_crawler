@@ -31,8 +31,8 @@ class TrainConfig:
     ent_coef_decay: float = 0.995  # Anneal entropy coefficient
 
     # Training meta
-    total_timesteps: int = 10_000_000
-    checkpoint_interval: int = 100_000
+    total_timesteps: int = 1_000_000
+    checkpoint_interval: int = 10_000
     eval_interval: int = 50_000
     eval_episodes: int = 10
     seed: int = 42
@@ -50,7 +50,9 @@ class TrainConfig:
     # Self-play
     use_self_play: bool = False
     self_play_pool_size: int = 10
-    self_play_snapshot_interval: int = 100_000
+    self_play_snapshot_interval: int = 10_000
+    self_play_win_rate_threshold: float = 0.75
+    self_play_min_episodes: int = 100
 
     # Device
     device: str = "cuda"  # "cuda" or "cpu"
